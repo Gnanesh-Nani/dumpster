@@ -1,0 +1,39 @@
+{
+  "name": "dumpster-cli",
+  "version": "0.1.0",
+  "description": "Project-based MySQL dump/clone CLI — manage projects, servers, and databases, then dump or clone with a progress bar.",
+  "bin": {
+    "dumpster": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^8.5.2",
+    "boxen": "^5.1.2",
+    "chalk": "^4.1.2",
+    "cli-progress": "^3.12.0",
+    "commander": "^12.1.0",
+    "figlet": "^1.11.4",
+    "gradient-string": "^2.0.2",
+    "mysql2": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
+    "@types/figlet": "^1.7.0",
+    "@types/gradient-string": "^1.1.6",
+    "@types/node": "^20.14.15",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}
