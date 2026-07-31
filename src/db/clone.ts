@@ -1,8 +1,6 @@
 import { spawn } from "child_process";
-import cliProgress from "cli-progress";
 import { ConnParams } from "./mysql";
-import { mysqldumpArgs } from "./dump";
-import { barFormat } from "../ui/theme";
+import { mysqldumpArgs, OnProgress, buildSpawn } from "./dump";
 import { SpeedTracker } from "./speed";
 
 export async function cloneDatabase(
@@ -10,29 +8,22 @@ export async function cloneDatabase(
   sourceDb: string,
   targetConn: ConnParams,
   targetDb: string,
-  estimatedSize: number
+  estimatedSize: number,
+  onProgress?: OnProgress
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const dumpChild = spawn("mysqldump", mysqldumpArgs(sourceConn, sourceDb), {
-      env: { ...process.env, MYSQL_PWD: sourceConn.password },
-    });
+    const dumpSpec = buildSpawn(sourceConn, "mysqldump", mysqldumpArgs(sourceConn, sourceDb));
+    const dumpChild = spawn(dumpSpec.bin, dumpSpec.args, { env: dumpSpec.env });
 
-    const importChild = spawn(
+    const importHost = targetConn.container ? "127.0.0.1" : targetConn.host;
+    const importPort = targetConn.container ? 3306 : targetConn.port;
+    const importSpec = buildSpawn(
+      targetConn,
       "mysql",
-      ["-h", targetConn.host, "-P", String(targetConn.port), "-u", targetConn.user, targetDb],
-      { env: { ...process.env, MYSQL_PWD: targetConn.password } }
+      ["-h", importHost, "-P", String(importPort), "-u", targetConn.user, targetDb]
     );
+    const importChild = spawn(importSpec.bin, importSpec.args, { env: importSpec.env });
 
-    const bar = new cliProgress.SingleBar(
-      {
-        format: barFormat,
-        hideCursor: true,
-        barCompleteChar: "█",
-        barIncompleteChar: "░",
-      },
-      cliProgress.Presets.shades_classic
-    );
-    bar.start(estimatedSize > 0 ? estimatedSize : 1, 0, { label: "cloning", speed: "-- MB/s", etaStr: "--:--" });
     const speed = new SpeedTracker();
     speed.total = estimatedSize;
 
@@ -43,12 +34,8 @@ export async function cloneDatabase(
     dumpChild.stdout.on("data", (chunk: Buffer) => {
       written += chunk.length;
       const { speedLabel, etaLabel } = speed.update(written);
-      if (estimatedSize > 0) {
-        bar.update(Math.min(written, estimatedSize), { label: "cloning", speed: speedLabel, etaStr: etaLabel });
-      } else {
-        bar.setTotal(written + 1);
-        bar.update(written, { label: "cloning", speed: speedLabel, etaStr: "--:--" });
-      }
+      const total = estimatedSize > 0 ? estimatedSize : written + 1;
+      onProgress?.({ written: Math.min(written, total), total, speedLabel, etaLabel: estimatedSize > 0 ? etaLabel : "--:--" });
     });
 
     dumpChild.stderr.on("data", (chunk: Buffer) => {
@@ -59,9 +46,6 @@ export async function cloneDatabase(
     });
 
     dumpChild.stdout.pipe(importChild.stdin);
-    // If the import side dies first, importChild.stdin closes and further writes
-    // to it emit EPIPE — without a listener that crashes the process, and without
-    // killing mysqldump it sits blocked on backpressure forever.
     importChild.stdin.on("error", () => {});
 
     let dumpDone = false;
@@ -71,8 +55,8 @@ export async function cloneDatabase(
 
     function finish() {
       if (!dumpDone || !importDone) return;
-      bar.update(estimatedSize > 0 ? estimatedSize : written);
-      bar.stop();
+      const total = estimatedSize > 0 ? estimatedSize : written;
+      onProgress?.({ written: total, total, speedLabel: "done", etaLabel: "00:00" });
       if (dumpCode !== 0 && dumpCode !== null) {
         reject(new Error(`mysqldump exited with code ${dumpCode}: ${dumpStderr}`));
       } else if (importCode !== 0) {
@@ -83,12 +67,10 @@ export async function cloneDatabase(
     }
 
     dumpChild.on("error", (err) => {
-      bar.stop();
       importChild.kill();
       reject(err);
     });
     importChild.on("error", (err) => {
-      bar.stop();
       dumpChild.kill();
       reject(err);
     });
@@ -101,7 +83,6 @@ export async function cloneDatabase(
     importChild.on("close", (code) => {
       importDone = true;
       importCode = code;
-      // if import dies before dump finishes, dump has nowhere to write — kill it
       if (!dumpDone) {
         dumpChild.kill();
       }

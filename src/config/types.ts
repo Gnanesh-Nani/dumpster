@@ -5,6 +5,7 @@ export interface ServerProfile {
   port: number;
   user: string;
   passwordEnc: string;
+  container?: string;
 }
 
 export interface LocalTarget {
@@ -12,6 +13,7 @@ export interface LocalTarget {
   port: number;
   user: string;
   passwordEnc: string;
+  container?: string;
 }
 
 export interface ConfigFile {

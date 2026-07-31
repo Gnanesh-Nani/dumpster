@@ -1,9 +1,16 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
-import cliProgress from "cli-progress";
 import { ConnParams } from "./mysql";
-import { barFormat } from "../ui/theme";
 import { SpeedTracker } from "./speed";
+
+export interface ProgressUpdate {
+  written: number;
+  total: number;
+  speedLabel: string;
+  etaLabel: string;
+}
+
+export type OnProgress = (u: ProgressUpdate) => void;
 
 export function checkBinaryOnPath(bin: string): boolean {
   const result = require("child_process").spawnSync(
@@ -14,9 +21,13 @@ export function checkBinaryOnPath(bin: string): boolean {
 }
 
 export function mysqldumpArgs(conn: ConnParams, database: string): string[] {
+  // When running inside a container, connect to MySQL over its localhost
+  // (the container's own bind), not the host address the user entered.
+  const host = conn.container ? "127.0.0.1" : conn.host;
+  const port = conn.container ? 3306 : conn.port;
   return [
-    "-h", conn.host,
-    "-P", String(conn.port),
+    "-h", host,
+    "-P", String(port),
     "-u", conn.user,
     "--single-transaction",
     "--no-tablespaces",
@@ -28,33 +39,40 @@ export function mysqldumpArgs(conn: ConnParams, database: string): string[] {
   ];
 }
 
-function makeBar(estimatedTotal: number, label: string): cliProgress.SingleBar {
-  const bar = new cliProgress.SingleBar(
-    {
-      format: barFormat,
-      hideCursor: true,
-      barCompleteChar: "█",
-      barIncompleteChar: "░",
-    },
-    cliProgress.Presets.shades_classic
-  );
-  bar.start(estimatedTotal > 0 ? estimatedTotal : 1, 0, { label, speed: "-- MB/s", etaStr: "--:--" });
-  return bar;
+// Build (bin, args, env) for a mysqldump or mysql call, wrapping in
+// `docker exec` when the conn is container-scoped so binaries inside the
+// container are used instead of ones on the host PATH.
+export function buildSpawn(
+  conn: ConnParams,
+  bin: "mysqldump" | "mysql",
+  toolArgs: string[]
+): { bin: string; args: string[]; env: NodeJS.ProcessEnv } {
+  if (conn.container) {
+    return {
+      bin: "docker",
+      args: ["exec", "-i", "-e", "MYSQL_PWD", conn.container, bin, ...toolArgs],
+      env: { ...process.env, MYSQL_PWD: conn.password },
+    };
+  }
+  return {
+    bin,
+    args: toolArgs,
+    env: { ...process.env, MYSQL_PWD: conn.password },
+  };
 }
 
 export async function dumpToFile(
   conn: ConnParams,
   database: string,
   outFile: string,
-  estimatedSize: number
+  estimatedSize: number,
+  onProgress?: OnProgress
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("mysqldump", mysqldumpArgs(conn, database), {
-      env: { ...process.env, MYSQL_PWD: conn.password },
-    });
+    const spec = buildSpawn(conn, "mysqldump", mysqldumpArgs(conn, database));
+    const child = spawn(spec.bin, spec.args, { env: spec.env });
 
     const out = fs.createWriteStream(outFile);
-    const bar = makeBar(estimatedSize, "dumping");
     const speed = new SpeedTracker();
     speed.total = estimatedSize;
     let written = 0;
@@ -63,12 +81,8 @@ export async function dumpToFile(
     child.stdout.on("data", (chunk: Buffer) => {
       written += chunk.length;
       const { speedLabel, etaLabel } = speed.update(written);
-      if (estimatedSize > 0) {
-        bar.update(Math.min(written, estimatedSize), { label: "dumping", speed: speedLabel, etaStr: etaLabel });
-      } else {
-        bar.setTotal(written + 1);
-        bar.update(written, { label: "dumping", speed: speedLabel, etaStr: "--:--" });
-      }
+      const total = estimatedSize > 0 ? estimatedSize : written + 1;
+      onProgress?.({ written: Math.min(written, total), total, speedLabel, etaLabel: estimatedSize > 0 ? etaLabel : "--:--" });
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
@@ -77,14 +91,11 @@ export async function dumpToFile(
 
     child.stdout.pipe(out);
 
-    child.on("error", (err) => {
-      bar.stop();
-      reject(err);
-    });
+    child.on("error", (err) => reject(err));
 
     child.on("close", (code) => {
-      bar.update(estimatedSize > 0 ? estimatedSize : written);
-      bar.stop();
+      const total = estimatedSize > 0 ? estimatedSize : written;
+      onProgress?.({ written: total, total, speedLabel: "done", etaLabel: "00:00" });
       if (code !== 0) {
         reject(new Error(`mysqldump exited with code ${code}: ${stderr}`));
       } else {
