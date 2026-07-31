@@ -10,7 +10,7 @@ const program = new Command();
 program
   .name("dumpster")
   .description("MySQL dump/clone CLI")
-  .version("0.1.0");
+  .version("2.1.0");
 
 program.action(() => {
   const hasMysqlBins = checkBinaryOnPath("mysqldump") && checkBinaryOnPath("mysql");
