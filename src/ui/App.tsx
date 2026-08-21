@@ -23,8 +23,16 @@ import {
   estimateDatabaseSize,
   testConnection,
 } from "../db/mysql";
-import { dumpToFile } from "../db/dump";
+import { dumpToFile, checkBinaryOnPath, isLocalHost } from "../db/dump";
 import { cloneDatabase } from "../db/clone";
+import { DumpMethodPicker, DumpMethod } from "./screens/DumpMethodPicker";
+
+// A local server (no docker container configured) with no `mysqldump` on
+// PATH can't be dumped the normal way — ask the user how to proceed instead
+// of failing partway through the dump.
+function needsDumpMethodPrompt(conn: ConnParams): boolean {
+  return !conn.container && isLocalHost(conn.host) && !checkBinaryOnPath("mysqldump");
+}
 
 type Screen =
   | { kind: "menu" }
@@ -34,6 +42,7 @@ type Screen =
   | { kind: "removePicker" }
   | { kind: "serverForm"; mode: "add" | "edit"; server?: ServerProfile; status?: { kind: "info" | "err"; text: string } | null; returnTo: "remoteSources" | "pickSource" }
   | { kind: "pickServer" }
+  | { kind: "dumpMethodPrompt"; server: ServerProfile; conn: ConnParams }
   | { kind: "loadingDbs"; server: ServerProfile; conn: ConnParams }
   | { kind: "pickDatabase"; server: ServerProfile; conn: ConnParams; databases: string[] }
   | { kind: "outputPath"; server: ServerProfile; conn: ConnParams; database: string; defaultPath: string }
@@ -158,7 +167,17 @@ export const App: React.FC = () => {
   function onPickServer(s: ServerProfile) {
     const conn = serverToConnParams(s);
     setCrumbs((c) => ({ ...c, source: `${s.host} : (choosing db)` }));
-    push({ kind: "loadingDbs", server: s, conn });
+    if (needsDumpMethodPrompt(conn)) {
+      push({ kind: "dumpMethodPrompt", server: s, conn });
+    } else {
+      push({ kind: "loadingDbs", server: s, conn });
+    }
+  }
+
+  function onChooseDumpMethod(server: ServerProfile, conn: ConnParams, method: DumpMethod) {
+    setStack((prev) => prev.slice(0, -1).concat({
+      kind: "loadingDbs", server, conn: { ...conn, dumpMethod: method },
+    }));
   }
 
   function onPickDatabase(server: ServerProfile, conn: ConnParams, db: string) {
@@ -397,6 +416,16 @@ export const App: React.FC = () => {
           />
         );
       }
+      break;
+
+    case "dumpMethodPrompt":
+      body = (
+        <DumpMethodPicker
+          hasDocker={checkBinaryOnPath("docker")}
+          onPick={(m) => onChooseDumpMethod(screen.server, screen.conn, m)}
+          onCancel={() => pop()}
+        />
+      );
       break;
 
     case "loadingDbs":

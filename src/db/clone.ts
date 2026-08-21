@@ -1,6 +1,9 @@
 import { spawn } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { ConnParams } from "./mysql";
-import { mysqldumpArgs, OnProgress, buildSpawn } from "./dump";
+import { mysqldumpArgs, OnProgress, buildSpawn, dumpToFileJs } from "./dump";
 import { SpeedTracker } from "./speed";
 
 export async function cloneDatabase(
@@ -11,6 +14,9 @@ export async function cloneDatabase(
   estimatedSize: number,
   onProgress?: OnProgress
 ): Promise<void> {
+  if (sourceConn.dumpMethod === "js") {
+    return cloneViaJsDump(sourceConn, sourceDb, targetConn, targetDb, onProgress);
+  }
   return new Promise((resolve, reject) => {
     const dumpSpec = buildSpawn(sourceConn, "mysqldump", mysqldumpArgs(sourceConn, sourceDb));
     const dumpChild = spawn(dumpSpec.bin, dumpSpec.args, { env: dumpSpec.env });
@@ -89,4 +95,45 @@ export async function cloneDatabase(
       finish();
     });
   });
+}
+
+// JS-fallback clone path: no mysqldump/docker binary available for the source
+// connection, so dump to a temp file via the pure-JS dumper, then pipe that
+// file into a `mysql` import (still requiring `mysql`/docker on the *target*
+// side, same as before — only the source-side dump changes).
+async function cloneViaJsDump(
+  sourceConn: ConnParams,
+  sourceDb: string,
+  targetConn: ConnParams,
+  targetDb: string,
+  onProgress?: OnProgress
+): Promise<void> {
+  const tmpFile = path.join(os.tmpdir(), `dumpster_${sourceDb}_${process.pid}.sql`);
+  try {
+    await dumpToFileJs(sourceConn, sourceDb, tmpFile, onProgress);
+
+    await new Promise<void>((resolve, reject) => {
+      const importHost = targetConn.container ? "127.0.0.1" : targetConn.host;
+      const importPort = targetConn.container ? 3306 : targetConn.port;
+      const importSpec = buildSpawn(
+        targetConn,
+        "mysql",
+        ["-h", importHost, "-P", String(importPort), "-u", targetConn.user, targetDb]
+      );
+      const importChild = spawn(importSpec.bin, importSpec.args, { env: importSpec.env });
+      let importStderr = "";
+      importChild.stderr.on("data", (c: Buffer) => (importStderr += c.toString()));
+      importChild.on("error", reject);
+      importChild.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(`mysql import exited with code ${code}: ${importStderr}`));
+        } else {
+          resolve();
+        }
+      });
+      fs.createReadStream(tmpFile).pipe(importChild.stdin);
+    });
+  } finally {
+    fs.unlink(tmpFile, () => {});
+  }
 }

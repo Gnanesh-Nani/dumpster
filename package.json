@@ -18,6 +18,9 @@
     "node": ">=18"
   },
   "license": "MIT",
+  "overrides": {
+    "mysql2": "^3.11.0"
+  },
   "dependencies": {
     "chalk": "^4.1.2",
     "commander": "^12.1.0",
@@ -28,6 +31,7 @@
     "ink-spinner": "^4.0.3",
     "ink-text-input": "^4.0.3",
     "mysql2": "^3.11.0",
+    "mysqldump": "^3.2.0",
     "react": "^17.0.2"
   },
   "devDependencies": {

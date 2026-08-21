@@ -11,6 +11,10 @@ export interface ConnParams {
   user: string;
   password: string;
   container?: string;
+  // How to run mysqldump/mysql for this connection when it has no `container`
+  // set: "native" (default, host PATH binaries) | "docker-adhoc" (disposable
+  // `docker run` container) | "js" (pure-JS dump, no external binary).
+  dumpMethod?: "native" | "docker-adhoc" | "js";
 }
 
 export function serverToConnParams(server: ServerProfile): ConnParams {
@@ -27,7 +31,7 @@ export function serverToConnParams(server: ServerProfile): ConnParams {
 // servers with no TLS configured (e.g. local MySQL) reject an SSL handshake attempt.
 // Try SSL first, then fall back to plaintext so both cases work without per-server config.
 async function connect(conn: ConnParams): Promise<mysql.Connection> {
-  const { container: _c, ...clean } = conn;
+  const { container: _c, dumpMethod: _dm, ...clean } = conn;
   try {
     return await mysql.createConnection({ ...clean, ssl: {} });
   } catch (err) {

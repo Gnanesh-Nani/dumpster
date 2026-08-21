@@ -3,7 +3,6 @@ import { Command } from "commander";
 import React from "react";
 import { render } from "ink";
 import { App } from "./ui/App";
-import { checkBinaryOnPath } from "./db/dump";
 
 const program = new Command();
 
@@ -13,17 +12,9 @@ program
   .version("2.1.0");
 
 program.action(() => {
-  const hasMysqlBins = checkBinaryOnPath("mysqldump") && checkBinaryOnPath("mysql");
-  const hasDocker = checkBinaryOnPath("docker");
-  if (!hasMysqlBins && !hasDocker) {
-    console.error(
-      "Error: neither MySQL client tools ('mysqldump'/'mysql') nor 'docker' found on PATH.\n" +
-        "Install one of:\n" +
-        "  - MySQL client tools (mysqldump + mysql), or\n" +
-        "  - Docker (if your MySQL runs inside a container — dumpster can exec into it)"
-    );
-    process.exit(1);
-  }
+  // No startup binary check: when a local server is missing mysqldump/mysql,
+  // the app now prompts per-connection to run via an ad-hoc Docker container
+  // or a pure-JS dump — either path works with no client tools installed.
   // Enter the terminal's alternate screen buffer so prior scrollback is
   // hidden while dumpster runs, and restored untouched on exit.
   const ENTER_ALT = "\x1b[?1049h";
