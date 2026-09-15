@@ -1,10 +1,20 @@
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ConnParams } from "./mysql";
 import { mysqldumpArgs, OnProgress, buildSpawn, dumpToFileJs } from "./dump";
 import { SpeedTracker } from "./speed";
+
+// child.kill() throws EINVAL on Windows if the process handle is already
+// gone (e.g. it exited right before the call), so swallow that race.
+function safeKill(child: ChildProcess) {
+  try {
+    child.kill();
+  } catch {
+    // process already exited/handle invalid; nothing to do
+  }
+}
 
 export async function cloneDatabase(
   sourceConn: ConnParams,
@@ -73,11 +83,11 @@ export async function cloneDatabase(
     }
 
     dumpChild.on("error", (err) => {
-      importChild.kill();
+      safeKill(importChild);
       reject(err);
     });
     importChild.on("error", (err) => {
-      dumpChild.kill();
+      safeKill(dumpChild);
       reject(err);
     });
 
@@ -90,7 +100,7 @@ export async function cloneDatabase(
       importDone = true;
       importCode = code;
       if (!dumpDone) {
-        dumpChild.kill();
+        safeKill(dumpChild);
       }
       finish();
     });
