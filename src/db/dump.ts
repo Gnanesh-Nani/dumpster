@@ -20,6 +20,16 @@ export function checkBinaryOnPath(bin: string): boolean {
   return result.status === 0;
 }
 
+// True when a connection attempt failed because the server has no TLS set up
+// (so retrying in plaintext is the right move), rather than for some unrelated
+// reason. mysql2 reports this as HANDSHAKE_NO_SSL_SUPPORT.
+export function isTlsUnsupportedError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string } | null;
+  if (!e) return false;
+  if (e.code === "HANDSHAKE_NO_SSL_SUPPORT") return true;
+  return /does not support secure connect/i.test(e.message ?? "");
+}
+
 export function isLocalHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }
@@ -95,16 +105,24 @@ export async function dumpToFileJs(
 ): Promise<void> {
   const mysqldump = require("mysqldump");
   onProgress?.({ written: 0, total: 0, speedLabel: "-- MB/s", etaLabel: "--:--" });
-  await mysqldump({
-    connection: {
-      host: conn.host,
-      port: conn.port,
-      user: conn.user,
-      password: conn.password,
-      database,
-    },
-    dumpToFile: outFile,
-  });
+  const connection = {
+    host: conn.host,
+    port: conn.port,
+    user: conn.user,
+    password: conn.password,
+    database,
+  };
+  // This library defaults to no TLS, which servers with
+  // --require_secure_transport=ON (e.g. Azure Database for MySQL) reject.
+  // Try SSL first, fall back to plaintext only when the server itself can't
+  // do TLS - any other failure is a real error and must not be masked by a
+  // second full dump attempt.
+  try {
+    await mysqldump({ connection: { ...connection, ssl: {} }, dumpToFile: outFile });
+  } catch (err) {
+    if (!isTlsUnsupportedError(err)) throw err;
+    await mysqldump({ connection, dumpToFile: outFile });
+  }
   const written = fs.statSync(outFile).size;
   onProgress?.({ written, total: written, speedLabel: "done", etaLabel: "00:00" });
 }
@@ -132,7 +150,8 @@ export async function importFileJs(
   let connection;
   try {
     connection = await mysql.createConnection({ ...base, ssl: {} });
-  } catch {
+  } catch (err) {
+    if (!isTlsUnsupportedError(err)) throw err;
     connection = await mysql.createConnection(base);
   }
   try {
