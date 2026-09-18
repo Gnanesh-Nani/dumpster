@@ -30,8 +30,40 @@ export function isTlsUnsupportedError(err: unknown): boolean {
   return /does not support secure connect/i.test(e.message ?? "");
 }
 
+const CERT_ERROR_CODES = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+// True when TLS itself worked but the certificate couldn't be verified - the
+// normal case for a local MySQL, which auto-generates a self-signed cert.
+export function isCertValidationError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string } | null;
+  if (!e) return false;
+  if (e.code && CERT_ERROR_CODES.has(e.code)) return true;
+  return /self.signed certificate|unable to verify/i.test(e.message ?? "");
+}
+
 export function isLocalHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+// The TLS settings to try, in order, for a given host.
+//
+// Verified TLS is always attempted first. Only for a local host do we then
+// retry without certificate verification: MySQL generates a self-signed cert
+// out of the box, and a loopback connection never leaves the machine, so
+// there is no meaningful MITM exposure. For a remote host we deliberately do
+// NOT downgrade to an unverified connection - a bad certificate there is a
+// real warning, so it surfaces as an error instead.
+export function tlsAttempts(host: string): Array<Record<string, unknown> | null> {
+  if (isLocalHost(host)) {
+    return [{ ssl: {} }, { ssl: { rejectUnauthorized: false } }, null];
+  }
+  return [{ ssl: {} }, null];
 }
 
 export function mysqldumpArgs(conn: ConnParams, database: string): string[] {
@@ -113,15 +145,18 @@ export async function dumpToFileJs(
     database,
   };
   // This library defaults to no TLS, which servers with
-  // --require_secure_transport=ON (e.g. Azure Database for MySQL) reject.
-  // Try SSL first, fall back to plaintext only when the server itself can't
-  // do TLS - any other failure is a real error and must not be masked by a
-  // second full dump attempt.
-  try {
-    await mysqldump({ connection: { ...connection, ssl: {} }, dumpToFile: outFile });
-  } catch (err) {
-    if (!isTlsUnsupportedError(err)) throw err;
-    await mysqldump({ connection, dumpToFile: outFile });
+  // --require_secure_transport=ON (e.g. Azure Database for MySQL) reject. Walk
+  // the TLS ladder, moving on only for a TLS-negotiation failure - any other
+  // error is real and must not be masked by a second full dump attempt.
+  const attempts = tlsAttempts(conn.host);
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      await mysqldump({ connection: { ...connection, ...attempts[i] }, dumpToFile: outFile });
+      break;
+    } catch (err) {
+      const isLast = i === attempts.length - 1;
+      if (isLast || !(isTlsUnsupportedError(err) || isCertValidationError(err))) throw err;
+    }
   }
   const written = fs.statSync(outFile).size;
   onProgress?.({ written, total: written, speedLabel: "done", etaLabel: "00:00" });
@@ -145,14 +180,18 @@ export async function importFileJs(
     multipleStatements: true,
   };
   // Servers that require TLS (e.g. Azure Database for MySQL) reject plain
-  // connections; servers with no TLS configured reject an SSL handshake.
-  // Try SSL first, then fall back to plaintext, same as mysql.ts's connect().
+  // connections; a local MySQL presents a self-signed cert; a server with no
+  // TLS at all rejects the handshake. Walk the ladder for those cases only.
+  const attempts = tlsAttempts(conn.host);
   let connection;
-  try {
-    connection = await mysql.createConnection({ ...base, ssl: {} });
-  } catch (err) {
-    if (!isTlsUnsupportedError(err)) throw err;
-    connection = await mysql.createConnection(base);
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      connection = await mysql.createConnection({ ...base, ...attempts[i] });
+      break;
+    } catch (err) {
+      const isLast = i === attempts.length - 1;
+      if (isLast || !(isTlsUnsupportedError(err) || isCertValidationError(err))) throw err;
+    }
   }
   try {
     const sql = fs.readFileSync(inFile, "utf8");

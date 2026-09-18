@@ -112,6 +112,14 @@ export async function cloneDatabase(
   });
 }
 
+// Clone runs two connections against two different servers, so an error like
+// a TLS failure is ambiguous on its own. Tag it with the stage and host it
+// came from, keeping the original as `cause`.
+function stageError(stage: string, host: string, err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  return new Error(`${stage} (${host}): ${message}`, { cause: err });
+}
+
 // JS-fallback clone path: no mysqldump/docker binary available for the source
 // connection, so dump to a temp file via the pure-JS dumper, then pipe that
 // file into a `mysql` import (still requiring `mysql`/docker on the *target*
@@ -125,10 +133,18 @@ async function cloneViaJsDump(
 ): Promise<void> {
   const tmpFile = path.join(os.tmpdir(), `dumpster_${sourceDb}_${process.pid}.sql`);
   try {
-    await dumpToFileJs(sourceConn, sourceDb, tmpFile, onProgress);
+    try {
+      await dumpToFileJs(sourceConn, sourceDb, tmpFile, onProgress);
+    } catch (err) {
+      throw stageError("source dump", sourceConn.host, err);
+    }
 
     if (!targetConn.container && !checkBinaryOnPath("mysql")) {
-      await importFileJs(targetConn, targetDb, tmpFile);
+      try {
+        await importFileJs(targetConn, targetDb, tmpFile);
+      } catch (err) {
+        throw stageError("target import", targetConn.host, err);
+      }
       return;
     }
 
