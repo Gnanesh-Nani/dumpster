@@ -23,7 +23,7 @@ import {
   estimateDatabaseSize,
   testConnection,
 } from "../db/mysql";
-import { dumpToFile, checkBinaryOnPath, isLocalHost } from "../db/dump";
+import { dumpToFile, checkBinaryOnPath } from "../db/dump";
 import { cloneDatabase } from "../db/clone";
 import { DumpMethodPicker, DumpMethod } from "./screens/DumpMethodPicker";
 
@@ -31,7 +31,7 @@ import { DumpMethodPicker, DumpMethod } from "./screens/DumpMethodPicker";
 // PATH can't be dumped the normal way — ask the user how to proceed instead
 // of failing partway through the dump.
 function needsDumpMethodPrompt(conn: ConnParams): boolean {
-  return !conn.container && isLocalHost(conn.host) && !checkBinaryOnPath("mysqldump");
+  return !conn.container && !checkBinaryOnPath("mysqldump");
 }
 
 type Screen =
