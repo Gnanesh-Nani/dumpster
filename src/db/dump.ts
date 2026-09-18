@@ -56,17 +56,27 @@ export function isLocalHost(host: string): boolean {
 
 // The TLS settings to try, in order, for a given host.
 //
-// Verified TLS is always attempted first. Only for a local host do we then
+// Verified TLS is always attempted first. Only for a loopback host do we then
 // retry without certificate verification: MySQL generates a self-signed cert
-// out of the box, and a loopback connection never leaves the machine, so
-// there is no meaningful MITM exposure. For a remote host we deliberately do
-// NOT downgrade to an unverified connection - a bad certificate there is a
-// real warning, so it surfaces as an error instead.
+// out of the box, and a loopback connection never leaves the machine.
 export function tlsAttempts(host: string): Array<Record<string, unknown> | null> {
   if (isLocalHost(host)) {
     return [{ ssl: {} }, { ssl: { rejectUnauthorized: false } }, null];
   }
   return [{ ssl: {} }, null];
+}
+
+// Whether a failed attempt may fall through to the next, weaker rung.
+//
+// A server that speaks no TLS at all leaves plaintext as the only option, so
+// that advances on any host. A certificate that will not verify is different:
+// on loopback it is just MySQL's own self-signed cert, but on a remote host it
+// is indistinguishable from an active MITM. Advancing there would let an
+// attacker present a bad cert to force the connection down to plaintext and
+// read the whole dump, so a remote cert failure is fatal instead.
+export function canTryWeakerTransport(host: string, err: unknown): boolean {
+  if (isTlsUnsupportedError(err)) return true;
+  return isLocalHost(host) && isCertValidationError(err);
 }
 
 export function mysqldumpArgs(conn: ConnParams, database: string): string[] {
@@ -158,7 +168,7 @@ export async function dumpToFileJs(
       break;
     } catch (err) {
       const isLast = i === attempts.length - 1;
-      if (isLast || !(isTlsUnsupportedError(err) || isCertValidationError(err))) throw err;
+      if (isLast || !canTryWeakerTransport(conn.host, err)) throw err;
     }
   }
   const written = fs.statSync(outFile).size;
@@ -193,7 +203,7 @@ export async function importFileJs(
       break;
     } catch (err) {
       const isLast = i === attempts.length - 1;
-      if (isLast || !(isTlsUnsupportedError(err) || isCertValidationError(err))) throw err;
+      if (isLast || !canTryWeakerTransport(conn.host, err)) throw err;
     }
   }
   try {
