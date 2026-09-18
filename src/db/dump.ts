@@ -118,14 +118,23 @@ export async function importFileJs(
   inFile: string
 ): Promise<void> {
   const mysql = require("mysql2/promise");
-  const connection = await mysql.createConnection({
+  const base = {
     host: conn.host,
     port: conn.port,
     user: conn.user,
     password: conn.password,
     database,
     multipleStatements: true,
-  });
+  };
+  // Servers that require TLS (e.g. Azure Database for MySQL) reject plain
+  // connections; servers with no TLS configured reject an SSL handshake.
+  // Try SSL first, then fall back to plaintext, same as mysql.ts's connect().
+  let connection;
+  try {
+    connection = await mysql.createConnection({ ...base, ssl: {} });
+  } catch {
+    connection = await mysql.createConnection(base);
+  }
   try {
     const sql = fs.readFileSync(inFile, "utf8");
     await connection.query(sql);
