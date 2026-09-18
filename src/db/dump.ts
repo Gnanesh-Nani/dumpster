@@ -36,6 +36,9 @@ const CERT_ERROR_CODES = new Set([
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
   "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
   "ERR_TLS_CERT_ALTNAME_INVALID",
+  // mysql2 wraps the underlying OpenSSL failure and reports this instead of
+  // the specific code above, so a self-signed local cert arrives as this.
+  "HANDSHAKE_SSL_ERROR",
 ]);
 
 // True when TLS itself worked but the certificate couldn't be verified - the

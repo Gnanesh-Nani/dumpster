@@ -1,6 +1,6 @@
 {
   "name": "dumpster-cli",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "description": "Project-based MySQL dump/clone CLI — manage projects, servers, and databases, then dump or clone with a progress bar.",
   "bin": {
     "dumpster": "dist/index.js"
