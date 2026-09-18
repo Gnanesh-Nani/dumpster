@@ -109,6 +109,31 @@ export async function dumpToFileJs(
   onProgress?.({ written, total: written, speedLabel: "done", etaLabel: "00:00" });
 }
 
+// Pure-JS fallback for the import side: runs the dump file's SQL through a
+// mysql2 connection instead of spawning the `mysql` CLI, for machines with
+// no MySQL command-line client on PATH (e.g. Workbench-only installs).
+export async function importFileJs(
+  conn: ConnParams,
+  database: string,
+  inFile: string
+): Promise<void> {
+  const mysql = require("mysql2/promise");
+  const connection = await mysql.createConnection({
+    host: conn.host,
+    port: conn.port,
+    user: conn.user,
+    password: conn.password,
+    database,
+    multipleStatements: true,
+  });
+  try {
+    const sql = fs.readFileSync(inFile, "utf8");
+    await connection.query(sql);
+  } finally {
+    await connection.end();
+  }
+}
+
 export async function dumpToFile(
   conn: ConnParams,
   database: string,

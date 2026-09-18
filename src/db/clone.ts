@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ConnParams } from "./mysql";
-import { mysqldumpArgs, OnProgress, buildSpawn, dumpToFileJs } from "./dump";
+import { mysqldumpArgs, OnProgress, buildSpawn, dumpToFileJs, importFileJs, checkBinaryOnPath } from "./dump";
 import { SpeedTracker } from "./speed";
 
 // child.kill() throws EINVAL on Windows if the process handle is already
@@ -24,7 +24,12 @@ export async function cloneDatabase(
   estimatedSize: number,
   onProgress?: OnProgress
 ): Promise<void> {
-  if (sourceConn.dumpMethod === "js") {
+  // The target is always the local machine (this tool only clones remote ->
+  // local), so if it has no `mysql` CLI on PATH (e.g. Workbench-only
+  // installs, which don't add the CLI to PATH), fall back to a JS-only path
+  // for both sides rather than failing with ENOENT on the import.
+  const targetNeedsJsImport = !targetConn.container && !checkBinaryOnPath("mysql");
+  if (sourceConn.dumpMethod === "js" || targetNeedsJsImport) {
     return cloneViaJsDump(sourceConn, sourceDb, targetConn, targetDb, onProgress);
   }
   return new Promise((resolve, reject) => {
@@ -121,6 +126,11 @@ async function cloneViaJsDump(
   const tmpFile = path.join(os.tmpdir(), `dumpster_${sourceDb}_${process.pid}.sql`);
   try {
     await dumpToFileJs(sourceConn, sourceDb, tmpFile, onProgress);
+
+    if (!targetConn.container && !checkBinaryOnPath("mysql")) {
+      await importFileJs(targetConn, targetDb, tmpFile);
+      return;
+    }
 
     await new Promise<void>((resolve, reject) => {
       const importHost = targetConn.container ? "127.0.0.1" : targetConn.host;
